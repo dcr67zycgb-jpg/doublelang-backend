@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Интерактивная Доска</title>
+    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
+    <style>
+        textarea { width: 100%; max-width: 500px; height: 200px; font-size: 18px; padding: 10px; margin-top: 10px; }
+        #status { color: gray; font-style: italic; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Общая доска 📝</h1>
+    <h2>Урок ID: <span id="room-display"></span></h2>
+    <div id="status">Ожидание подключения...</div>
+    <textarea id="board" placeholder="Начните печатать..."></textarea>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Интерактивная Доска</title>
+    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
+    <style>
+        textarea { width: 100%; max-width: 500px; height: 200px; font-size: 18px; padding: 10px; margin-top: 10px; }
+        #status { color: gray; font-style: italic; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Общая доска 📝</h1>
+    <h2>Урок ID: <span id="room-display"></span></h2>
+    <div id="status">Ожидание подключения...</div>
+    <textarea id="board" placeholder="Начните печатать..."></textarea>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        let roomId = urlParams.get('lesson');
+
+        if (!roomId) {
+            roomId = Math.random().toString(36).substring(7);
+            window.history.replaceState(null, null, '?lesson=' + roomId);
+        }
+        document.getElementById('room-display').innerText = roomId;
+
+        // Запрашиваем имя пользователя перед подключением
+        const userName = prompt("Как вас зовут?") || "Аноним";
+
+        // Передаем и ID комнаты, и имя пользователя на сервер
+        const socket = io('http://localhost:3000', {
+            query: { roomId: roomId, userName: userName }
+        });
+
+        const board = document.getElementById('board');
+        const statusDiv = document.getElementById('status');
+
+        board.addEventListener('input', () => {
+            socket.emit('text_change', board.value);
+        });
+
+        socket.on('update_text', (newText) => {
+            board.value = newText;
+        });
+
+        // Слушаем системные сообщения от сервера (кто зашел/вышел)
+        socket.on('system_message', (msg) => {
+            statusDiv.innerText = msg;
+        });
+    </script>
+</body>
+</html>
