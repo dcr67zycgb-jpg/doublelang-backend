@@ -14,46 +14,41 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// Автоматически создаем таблицы при запуске сервера
 async function initDB() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL DEFAULT '',
+        email VARCHAR(255) UNIQUE NOT NULL DEFAULT '',
+        password VARCHAR(255) NOT NULL DEFAULT '',
+        role VARCHAR(20) NOT NULL DEFAULT 'student'
       );
-    `);
-
-    await pool.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS name VARCHAR(100) NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS email VARCHAR(255) UNIQUE NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS password VARCHAR(255) NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'student';
-    `);
-
-    await pool.query(`
       CREATE TABLE IF NOT EXISTS lessons (
         id SERIAL PRIMARY KEY,
         room_id VARCHAR(50) UNIQUE NOT NULL,
+        teacher_id INTEGER,
         board_content TEXT
       );
+      CREATE TABLE IF NOT EXISTS homework (
+        id SERIAL PRIMARY KEY,
+        hw_id VARCHAR(50) UNIQUE NOT NULL,
+        teacher_id INTEGER,
+        student_email VARCHAR(255) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        board_content TEXT,
+        status VARCHAR(20) DEFAULT 'assigned'
+      );
     `);
-
-    await pool.query(`
-      ALTER TABLE lessons
-        ADD COLUMN IF NOT EXISTS teacher_id INTEGER;
-    `);
-
-    console.log('✅ База данных обновлена: добавлены пользователи!');
+    console.log('✅ База данных DoubleLang полностью готова (уроки, пользователи, ДЗ)!');
   } catch (err) {
     console.error('❌ Ошибка БД:', err.message);
   }
 }
 initDB();
- 
 
 const app = express();
-app.use(express.json()); // Позволяет серверу читать логин и пароль
+app.use(express.json());
 app.use(cors({
   origin: 'https://doublelang-frontend.vercel.app',
   credentials: true,
@@ -61,14 +56,57 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Маршрут для Администратора: получение всех пользователей платформы
+// Администратор: все пользователи
 app.get('/api/users', async (req, res) => {
   try {
     const result = await pool.query('SELECT id, name, email, role FROM users ORDER BY id DESC');
     res.json(result.rows);
   } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ДЗ: учитель назначает задание
+app.post('/api/homework/assign', async (req, res) => {
+  const { teacher_id, student_email, title, board_content } = req.body;
+  const hw_id = 'hw_' + Math.random().toString(36).substring(7);
+  try {
+    await pool.query(
+      'INSERT INTO homework (hw_id, teacher_id, student_email, title, board_content) VALUES ($1, $2, $3, $4, $5)',
+      [hw_id, teacher_id, student_email.toLowerCase().trim(), title, JSON.stringify(board_content)]
+    );
+    res.json({ success: true, hw_id });
+  } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении пользователей' });
+    res.status(500).json({ error: 'Ошибка при назначении ДЗ' });
+  }
+});
+
+// ДЗ: список для ученика
+app.get('/api/homework/student', async (req, res) => {
+  const { email } = req.query;
+  try {
+    const result = await pool.query(
+      'SELECT hw_id, title, status FROM homework WHERE student_email = $1 ORDER BY id DESC',
+      [email.toLowerCase().trim()]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ДЗ: список для учителя
+app.get('/api/homework/teacher', async (req, res) => {
+  const { teacher_id } = req.query;
+  try {
+    const result = await pool.query(
+      'SELECT hw_id, title, student_email, status FROM homework WHERE teacher_id = $1 ORDER BY id DESC',
+      [teacher_id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
 
