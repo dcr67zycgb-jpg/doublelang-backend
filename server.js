@@ -61,6 +61,17 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Маршрут для Администратора: получение всех пользователей платформы
+app.get('/api/users', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, email, role FROM users ORDER BY id DESC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка при получении пользователей' });
+  }
+});
+
 // 3. ДОБАВЛЯЕМ НОВЫЙ МАРШРУТ ДЛЯ СПИСКА УРОКОВ
 app.get('/api/lessons', async (req, res) => {
   const { teacher_id } = req.query;
