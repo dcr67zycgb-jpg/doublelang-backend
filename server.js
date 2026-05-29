@@ -1,297 +1,167 @@
-require('dotenv').config({ path: require('path').join(__dirname, 'DoubleLang-backend/.env') }); // Загружаем переменные окружения из DoubleLang-backend/.env
+require('dotenv').config({ path: require('path').join(__dirname, 'DoubleLang-backend/.env') });
+
 const express = require('express');
 const http = require('http');
-const { Server } = require("socket.io");
-const { Pool } = require('pg'); // Библиотека для PostgreSQL
-const cors = require('cors'); // 1. Подключаем библиотеку CORS
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const SECRET_KEY = process.env.JWT_SECRET || 'doublelang-super-secret-key';
+const { Server } = require('socket.io');
+const cors = require('cors');
 
-// Настраиваем подключение к базе
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+const pool = require('./src/config/db');
+const userRoutes = require('./src/routes/user.routes');
+const homeworkRoutes = require('./src/routes/homework.routes');
+const scheduleRoutes = require('./src/routes/schedule.routes');
+const lessonRoutes = require('./src/routes/lesson.routes');
+const materialRoutes = require('./src/routes/material.routes');
+const { initSocket } = require('./src/socket/socketHandler');
+
+const app = express();
+const server = http.createServer(app);
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  /https:\/\/.*\.vercel\.app$/,
+];
+
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
 });
 
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const allowed = allowedOrigins.some((o) =>
+      typeof o === 'string' ? o === origin : o.test(origin)
+    );
+    callback(allowed ? null : new Error('Not allowed by CORS'), allowed);
+  },
+  credentials: true,
+}));
+app.use(express.json());
+
+// Маршруты API
+app.use('/api', userRoutes);
+app.use('/api/homework', homeworkRoutes);
+app.use('/api/schedule', scheduleRoutes);
+app.use('/api/lessons', lessonRoutes);
+app.use('/api/materials', materialRoutes);
+
+// Инициализация базы данных
 async function initDB() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
-        name VARCHAR(100) NOT NULL DEFAULT '',
-        email VARCHAR(255) UNIQUE NOT NULL DEFAULT '',
-        password VARCHAR(255) NOT NULL DEFAULT '',
-        role VARCHAR(20) NOT NULL DEFAULT 'student'
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+        phone VARCHAR(50),
+        about TEXT,
+        language VARCHAR(50),
+        timezone VARCHAR(50) DEFAULT 'UTC+3',
+        avatar_url VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
       CREATE TABLE IF NOT EXISTS lessons (
         id SERIAL PRIMARY KEY,
-        room_id VARCHAR(50) UNIQUE NOT NULL,
-        teacher_id INTEGER,
-        board_content TEXT
+        room_id VARCHAR(255) UNIQUE NOT NULL,
+        teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        board_content JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE TABLE IF NOT EXISTS homework (
+
+      CREATE TABLE IF NOT EXISTS lesson_materials (
         id SERIAL PRIMARY KEY,
-        hw_id VARCHAR(50) UNIQUE NOT NULL,
-        teacher_id INTEGER,
-        student_email VARCHAR(255) NOT NULL,
+        teacher_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title VARCHAR(255) NOT NULL,
-        board_content TEXT,
-        status VARCHAR(20) DEFAULT 'assigned'
+        material_type VARCHAR(50) NOT NULL,
+        content JSONB,
+        file_url VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
       CREATE TABLE IF NOT EXISTS schedule (
         id SERIAL PRIMARY KEY,
-        teacher_id INTEGER NOT NULL,
-        student_email VARCHAR(255) DEFAULT '',
+        room_id VARCHAR(255) UNIQUE NOT NULL,
         title VARCHAR(255) NOT NULL,
+        teacher_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         lesson_date DATE NOT NULL,
-        start_time VARCHAR(5) NOT NULL,
-        end_time VARCHAR(5) NOT NULL,
-        room_id VARCHAR(50) DEFAULT '',
-        status VARCHAR(20) DEFAULT 'scheduled'
+        start_time TIME NOT NULL,
+        end_time TIME NOT NULL,
+        status VARCHAR(50) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'completed', 'cancelled')),
+        created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS homework (
+        id SERIAL PRIMARY KEY,
+        hw_id VARCHAR(255) UNIQUE NOT NULL,
+        teacher_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        student_email VARCHAR(255) NOT NULL,
+        title VARCHAR(255),
+        board_content JSONB,
+        status VARCHAR(50) DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'submitted', 'checked')),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_homework_teacher ON homework(teacher_id);
+      CREATE INDEX IF NOT EXISTS idx_homework_student_email ON homework(student_email);
     `);
-    console.log('✅ База данных DoubleLang готова (уроки, пользователи, ДЗ, расписание)!');
+
+    // Миграция: добавляем student_id в schedule если его нет
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'schedule' AND column_name = 'student_id'
+        ) THEN
+          ALTER TABLE schedule ADD COLUMN student_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'schedule' AND column_name = 'status'
+        ) THEN
+          ALTER TABLE schedule ADD COLUMN status VARCHAR(50) DEFAULT 'scheduled';
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'lessons' AND column_name = 'updated_at'
+        ) THEN
+          ALTER TABLE lessons ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'homework' AND column_name = 'created_at'
+        ) THEN
+          ALTER TABLE homework ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
+        END IF;
+      END $$;
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_teacher ON schedule(teacher_id);
+    `);
+
+    console.log('✅ База данных инициализирована');
   } catch (err) {
-    console.error('❌ Ошибка БД:', err.message);
+    console.error('❌ Ошибка инициализации БД:', err.message);
   }
 }
-initDB();
 
-const app = express();
-app.use(express.json());
-const allowedOrigins = /^https:\/\/doublelang-frontend[a-z0-9\-]*\.vercel\.app$/;
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.test(origin)) callback(null, true);
-    else callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// Real-time логика
+initSocket(io, pool);
 
-// Администратор: все пользователи
-app.get('/api/users', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT id, name, email, role FROM users ORDER BY id DESC');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
+const PORT = process.env.PORT || 3001;
 
-// ДЗ: учитель назначает задание
-app.post('/api/homework/assign', async (req, res) => {
-  const { teacher_id, student_email, title, board_content } = req.body;
-  const hw_id = 'hw_' + Math.random().toString(36).substring(7);
-  try {
-    await pool.query(
-      'INSERT INTO homework (hw_id, teacher_id, student_email, title, board_content) VALUES ($1, $2, $3, $4, $5)',
-      [hw_id, teacher_id, student_email.toLowerCase().trim(), title, JSON.stringify(board_content)]
-    );
-    res.json({ success: true, hw_id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка при назначении ДЗ' });
-  }
-});
-
-// ДЗ: список для ученика
-app.get('/api/homework/student', async (req, res) => {
-  const { email } = req.query;
-  try {
-    const result = await pool.query(
-      'SELECT hw_id, title, status FROM homework WHERE student_email = $1 ORDER BY id DESC',
-      [email.toLowerCase().trim()]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// ДЗ: список для учителя
-app.get('/api/homework/teacher', async (req, res) => {
-  const { teacher_id } = req.query;
-  try {
-    const result = await pool.query(
-      'SELECT hw_id, title, student_email, status FROM homework WHERE teacher_id = $1 ORDER BY id DESC',
-      [teacher_id]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Расписание: получить для учителя
-app.get('/api/schedule', async (req, res) => {
-  const { teacher_id } = req.query;
-  try {
-    const result = await pool.query(
-      'SELECT * FROM schedule WHERE teacher_id = $1 ORDER BY lesson_date, start_time',
-      [teacher_id]
-    );
-    res.json(result.rows);
-  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
-});
-
-// Расписание: создать запись
-app.post('/api/schedule', async (req, res) => {
-  const { teacher_id, student_email, title, lesson_date, start_time, end_time } = req.body;
-  const room_id = 'sched_' + Math.random().toString(36).substring(7);
-  try {
-    const result = await pool.query(
-      'INSERT INTO schedule (teacher_id, student_email, title, lesson_date, start_time, end_time, room_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [teacher_id, student_email||'', title, lesson_date, start_time, end_time, room_id]
-    );
-    res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
-});
-
-// Расписание: удалить запись
-app.delete('/api/schedule/:id', async (req, res) => {
-  try {
-    await pool.query('DELETE FROM schedule WHERE id=$1', [req.params.id]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
-});
-
-// Профиль: обновить имя
-app.put('/api/profile', async (req, res) => {
-  const { id, name } = req.body;
-  try {
-    await pool.query('UPDATE users SET name=$1 WHERE id=$2', [name, id]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
-});
-
-// 3. ДОБАВЛЯЕМ НОВЫЙ МАРШРУТ ДЛЯ СПИСКА УРОКОВ
-app.get('/api/lessons', async (req, res) => {
-  const { teacher_id } = req.query;
-  try {
-    let result;
-    if (teacher_id) {
-      // Ищем уроки только конкретного учителя
-      result = await pool.query('SELECT room_id FROM lessons WHERE teacher_id = $1 ORDER BY id DESC', [teacher_id]);
-    } else {
-      result = await pool.query('SELECT room_id FROM lessons ORDER BY id DESC');
-    }
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Ошибка при получении уроков' });
-  }
-});
-
-// 4. Регистрация нового пользователя
-app.post('/api/register', async (req, res) => {
-  const { name, email, password, role } = req.body;
-  try {
-    const hash = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
-      [name, email, hash, role]
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Ошибка регистрации:', err.message);
-    res.status(500).json({ error: 'Ошибка регистрации. Возможно, email уже занят.' });
-  }
-});
-
-// 5. Вход в систему (Логин)
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    const user = result.rows[0];
-
-    if (user && await bcrypt.compare(password, user.password)) {
-      const token = jwt.sign({ id: user.id, role: user.role, name: user.name, email: user.email }, SECRET_KEY, { expiresIn: '24h' });
-      res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
-    } else {
-      res.status(401).json({ error: 'Неверный логин или пароль' });
-    }
-  } catch (err) {
-    console.error('Ошибка логина:', err.message);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-const server = http.createServer(app);
-
-// Настраиваем CORS, чтобы наш фронтенд (React) мог беспрепятственно подключиться
-const io = new Server(server, {
-  cors: {
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.test(origin)) callback(null, true);
-      else callback(new Error('Not allowed by CORS'));
-    },
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
-});
-
-io.on('connection', async (socket) => {
-  const roomId = socket.handshake.query.roomId;
-  const userName = socket.handshake.query.userName;
-  const userId = socket.handshake.query.userId; // Получаем ID пользователя
-
-  socket.join(roomId);
-  console.log(`${userName} (${socket.id}) зашел в комнату: ${roomId}`);
-
-  // 1. ЗАГРУЖАЕМ ИСТОРИЮ (Распаковываем JSON из базы)
-  try {
-    const result = await pool.query('SELECT board_content FROM lessons WHERE room_id = $1', [roomId]);
-    if (result.rows.length > 0 && result.rows[0].board_content) {
-      // Превращаем текст из БД обратно в массив
-      const blocksArray = JSON.parse(result.rows[0].board_content);
-      socket.emit('update_board', blocksArray);
-    }
-  } catch (err) {
-    console.error('Ошибка при загрузке доски:', err.message);
-  }
-
-  socket.to(roomId).emit('system_message', `👋 ${userName} присоединился к уроку`);
-  // --- WebRTC Сигналинг ---
-  socket.on('webrtc_offer', (offer) => {
-    socket.to(roomId).emit('webrtc_offer', offer);
+initDB().then(() => {
+  server.listen(PORT, () => {
+    console.log(`🚀 Сервер запущен на порту ${PORT}`);
   });
-  socket.on('webrtc_answer', (answer) => {
-    socket.to(roomId).emit('webrtc_answer', answer);
-  });
-  socket.on('webrtc_ice_candidate', (candidate) => {
-    socket.to(roomId).emit('webrtc_ice_candidate', candidate);
-  });
-  // 2. СОХРАНЯЕМ ИЗМЕНЕНИЯ (Упаковываем массив в JSON)
-  socket.on('board_change', async (newBlocks) => {
-    // Пересылаем массив другим участникам (Socket.io сам умеет передавать массивы)
-    socket.to(roomId).emit('update_board', newBlocks);
-
-    try {
-      // Упаковываем массив в строку для PostgreSQL
-      const jsonString = JSON.stringify(newBlocks);
-      const teacherId = (userId && userId !== 'null') ? userId : null;
-
-      // Сохраняем урок с привязкой к ID учителя
-      await pool.query(`
-        INSERT INTO lessons (room_id, teacher_id, board_content)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (room_id) DO UPDATE SET board_content = $3
-      `, [roomId, teacherId, jsonString]);
-    } catch (err) {
-      console.error('Ошибка при сохранении:', err.message);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`${userName} отключился`);
-    socket.to(roomId).emit('system_message', `🚪 ${userName} покинул урок`);
-  });
-});
-
-server.listen(3000, () => {
-  console.log('WebSocket сервер запущен на порту 3000 🚀');
 });
