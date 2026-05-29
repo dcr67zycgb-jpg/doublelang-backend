@@ -49,8 +49,12 @@ initDB();
 
 const app = express();
 app.use(express.json());
+const allowedOrigins = /^https:\/\/doublelang-frontend[a-z0-9\-]*\.vercel\.app$/;
 app.use(cors({
-  origin: 'https://doublelang-frontend.vercel.app',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.test(origin)) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -168,7 +172,10 @@ const server = http.createServer(app);
 // Настраиваем CORS, чтобы наш фронтенд (React) мог беспрепятственно подключиться
 const io = new Server(server, {
   cors: {
-    origin: 'https://doublelang-frontend.vercel.app',
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.test(origin)) callback(null, true);
+      else callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST'],
     credentials: true
   }
