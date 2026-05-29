@@ -39,8 +39,19 @@ async function initDB() {
         board_content TEXT,
         status VARCHAR(20) DEFAULT 'assigned'
       );
+      CREATE TABLE IF NOT EXISTS schedule (
+        id SERIAL PRIMARY KEY,
+        teacher_id INTEGER NOT NULL,
+        student_email VARCHAR(255) DEFAULT '',
+        title VARCHAR(255) NOT NULL,
+        lesson_date DATE NOT NULL,
+        start_time VARCHAR(5) NOT NULL,
+        end_time VARCHAR(5) NOT NULL,
+        room_id VARCHAR(50) DEFAULT '',
+        status VARCHAR(20) DEFAULT 'scheduled'
+      );
     `);
-    console.log('✅ База данных DoubleLang полностью готова (уроки, пользователи, ДЗ)!');
+    console.log('✅ База данных DoubleLang готова (уроки, пользователи, ДЗ, расписание)!');
   } catch (err) {
     console.error('❌ Ошибка БД:', err.message);
   }
@@ -112,6 +123,48 @@ app.get('/api/homework/teacher', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
+});
+
+// Расписание: получить для учителя
+app.get('/api/schedule', async (req, res) => {
+  const { teacher_id } = req.query;
+  try {
+    const result = await pool.query(
+      'SELECT * FROM schedule WHERE teacher_id = $1 ORDER BY lesson_date, start_time',
+      [teacher_id]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+// Расписание: создать запись
+app.post('/api/schedule', async (req, res) => {
+  const { teacher_id, student_email, title, lesson_date, start_time, end_time } = req.body;
+  const room_id = 'sched_' + Math.random().toString(36).substring(7);
+  try {
+    const result = await pool.query(
+      'INSERT INTO schedule (teacher_id, student_email, title, lesson_date, start_time, end_time, room_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [teacher_id, student_email||'', title, lesson_date, start_time, end_time, room_id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+// Расписание: удалить запись
+app.delete('/api/schedule/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM schedule WHERE id=$1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
+});
+
+// Профиль: обновить имя
+app.put('/api/profile', async (req, res) => {
+  const { id, name } = req.body;
+  try {
+    await pool.query('UPDATE users SET name=$1 WHERE id=$2', [name, id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Ошибка сервера' }); }
 });
 
 // 3. ДОБАВЛЯЕМ НОВЫЙ МАРШРУТ ДЛЯ СПИСКА УРОКОВ
