@@ -54,7 +54,12 @@ initDB();
 
 const app = express();
 app.use(express.json()); // Позволяет серверу читать логин и пароль
-app.use(cors()); // 2. Разрешаем запросы с других портов
+app.use(cors({
+  origin: 'https://doublelang-frontend.vercel.app',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // 3. ДОБАВЛЯЕМ НОВЫЙ МАРШРУТ ДЛЯ СПИСКА УРОКОВ
 app.get('/api/lessons', async (req, res) => {
@@ -112,8 +117,12 @@ app.post('/api/login', async (req, res) => {
 const server = http.createServer(app);
 
 // Настраиваем CORS, чтобы наш фронтенд (React) мог беспрепятственно подключиться
-const io = new Server(server, { 
-  cors: { origin: "*" } 
+const io = new Server(server, {
+  cors: {
+    origin: 'https://doublelang-frontend.vercel.app',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
 io.on('connection', async (socket) => {
