@@ -66,15 +66,6 @@ async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS lessons (
-        id SERIAL PRIMARY KEY,
-        room_id VARCHAR(255) UNIQUE NOT NULL,
-        teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        board_content JSONB,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-
       CREATE TABLE IF NOT EXISTS lesson_materials (
         id SERIAL PRIMARY KEY,
         teacher_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -85,16 +76,25 @@ async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS lessons (
+        id SERIAL PRIMARY KEY,
+        room_id VARCHAR(255) UNIQUE NOT NULL,
+        teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        board_content JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS schedule (
         id SERIAL PRIMARY KEY,
         room_id VARCHAR(255) UNIQUE NOT NULL,
         title VARCHAR(255) NOT NULL,
         teacher_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        student_email VARCHAR(255) DEFAULT '',
         lesson_date DATE NOT NULL,
-        start_time TIME NOT NULL,
-        end_time TIME NOT NULL,
-        status VARCHAR(50) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'completed', 'cancelled')),
+        start_time VARCHAR(5) NOT NULL,
+        end_time VARCHAR(5) NOT NULL,
+        status VARCHAR(50) DEFAULT 'scheduled',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
@@ -105,47 +105,13 @@ async function initDB() {
         student_email VARCHAR(255) NOT NULL,
         title VARCHAR(255),
         board_content JSONB,
-        status VARCHAR(50) DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'submitted', 'checked')),
+        status VARCHAR(50) DEFAULT 'assigned',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_homework_teacher ON homework(teacher_id);
       CREATE INDEX IF NOT EXISTS idx_homework_student_email ON homework(student_email);
-    `);
-
-    // Миграция: добавляем student_id в schedule если его нет
-    await pool.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'schedule' AND column_name = 'student_id'
-        ) THEN
-          ALTER TABLE schedule ADD COLUMN student_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
-        END IF;
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'schedule' AND column_name = 'status'
-        ) THEN
-          ALTER TABLE schedule ADD COLUMN status VARCHAR(50) DEFAULT 'scheduled';
-        END IF;
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'lessons' AND column_name = 'updated_at'
-        ) THEN
-          ALTER TABLE lessons ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
-        END IF;
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'homework' AND column_name = 'created_at'
-        ) THEN
-          ALTER TABLE homework ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
-        END IF;
-      END $$;
-    `);
-
-    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_schedule_teacher ON schedule(teacher_id);
     `);
 
@@ -155,7 +121,6 @@ async function initDB() {
   }
 }
 
-// Real-time логика
 initSocket(io, pool);
 
 const PORT = process.env.PORT || 3001;

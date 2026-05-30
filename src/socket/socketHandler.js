@@ -1,11 +1,32 @@
-const initSocket = (io, pool) => {
-  io.on('connection', (socket) => {
-    console.log('Пользователь подключился:', socket.id);
+const jwt = require('jsonwebtoken');
+const SECRET_KEY = process.env.JWT_SECRET || 'project-vibe-super-secret-key';
 
-    socket.on('join_room', (roomId, userId, userName) => {
+const initSocket = (io, pool) => {
+
+  // Middleware для аутентификации сокетов по JWT токену
+  io.use((socket, next) => {
+    const token = socket.handshake.auth.token;
+    if (!token) {
+      return next(new Error('Аутентификация не удалась: токен отсутствует.'));
+    }
+    jwt.verify(token, SECRET_KEY, (err, user) => {
+      if (err) {
+        return next(new Error('Аутентификация не удалась: невалидный токен.'));
+      }
+      socket.user = user; // Сохраняем данные пользователя (id, role, name) в объект сокета
+      next();
+    });
+  });
+
+  io.on('connection', (socket) => {
+    console.log(`Аутентифицированный пользователь [${socket.user.name}] подключился:`, socket.id);
+
+    socket.on('join_room', (roomId) => {
+      const { id: userId, name: userName } = socket.user;
+
       socket.join(roomId);
-      console.log(`${userName || 'Гость'} (${socket.id}) → комната: ${roomId}`);
-      socket.to(roomId).emit('system_message', `👋 ${userName || 'Гость'} присоединился к уроку`);
+      console.log(`Пользователь ${userName} (${userId}) присоединился к комнате: ${roomId}`);
+      socket.to(roomId).emit('system_message', `👋 ${userName} присоединился к уроку`);
       socket.to(roomId).emit('user_joined', socket.id);
 
       // WebRTC сигнализация
@@ -23,7 +44,7 @@ const initSocket = (io, pool) => {
       socket.on('board_change', async (newBlocks) => {
         socket.to(roomId).emit('update_board', newBlocks);
         try {
-          const teacherId = (userId && userId !== 'null') ? userId : null;
+          const teacherId = socket.user.role === 'teacher' ? userId : null;
           await pool.query(
             `INSERT INTO lessons (room_id, teacher_id, board_content)
              VALUES ($1, $2, $3)
@@ -65,14 +86,14 @@ const initSocket = (io, pool) => {
       });
 
       socket.on('disconnect', () => {
-        console.log(`${userName || 'Гость'} (${socket.id}) отключился от комнаты: ${roomId}`);
-        socket.to(roomId).emit('system_message', `🚪 ${userName || 'Гость'} покинул урок`);
+        console.log(`Пользователь ${userName} (${userId}) отключился от комнаты: ${roomId}`);
+        socket.to(roomId).emit('system_message', `🚪 ${userName} покинул урок`);
         socket.to(roomId).emit('user_disconnected', socket.id);
       });
     });
 
     socket.on('disconnect', () => {
-      console.log('Пользователь отключился:', socket.id);
+      console.log(`Пользователь [${socket.user.name}] отключился:`, socket.id);
     });
   });
 };
